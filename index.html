@@ -21,10 +21,10 @@
                 extend: {
                     colors: {
                         brand: {
-                            50: '#f8fafc', // Neutraler (Slate-like)
+                            50: '#f8fafc',
                             100: '#f1f5f9',
-                            500: '#64748b', // Slate 500 statt Blau
-                            600: '#475569', // Slate 600
+                            500: '#64748b',
+                            600: '#475569',
                             900: '#0f172a',
                         }
                     }
@@ -38,12 +38,12 @@
     <!-- Kein Header -->
 
     <!-- Main Content -->
-    <main class="flex-grow w-full max-w-3xl mx-auto px-4 py-8 flex flex-col justify-center">
+    <main class="flex-grow w-full max-w-5xl mx-auto px-4 py-8 flex flex-col justify-center">
         
         <div class="text-center mb-8">
             <h2 class="text-2xl font-bold text-slate-900 mb-2">Metadaten bereinigen</h2>
             <p class="text-slate-600 text-sm">
-                Entfernt Metadaten und reduziert den Datei-Header auf das technische Minimum.
+                Entfernt Metadaten, reduziert den Header und anonymisiert den Dateinamen.
             </p>
         </div>
 
@@ -106,10 +106,25 @@
             return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
         }
 
-        function generateRandomFilename(extension) {
-            const timestamp = new Date().getTime();
-            const random = Math.random().toString(36).substring(2, 8);
-            return `clean_${timestamp}_${random}.${extension}`;
+        // --- Filename Scrambler ---
+        function generateScrambledFilename(originalName, typeExtension) {
+            const lastDotIndex = originalName.lastIndexOf('.');
+            const nameWithoutExt = lastDotIndex !== -1 ? originalName.substring(0, lastDotIndex) : originalName;
+
+            if (nameWithoutExt.length <= 3) {
+                return `${nameWithoutExt}_anonym.${typeExtension}`;
+            }
+
+            const prefix = nameWithoutExt.substring(0, 3);
+            const suffix = nameWithoutExt.substring(3);
+
+            const charArray = suffix.split('');
+            for (let i = charArray.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [charArray[i], charArray[j]] = [charArray[j], charArray[i]];
+            }
+            
+            return `${prefix}${charArray.join('')}.${typeExtension}`;
         }
 
         function convertDMSToDD(degrees, minutes, seconds, direction) {
@@ -118,7 +133,7 @@
             return dd.toFixed(6);
         }
 
-        // --- BINARY SANITIZERS (Header Neutralization) ---
+        // --- BINARY SANITIZERS ---
         async function sanitizeJPEG(blob) {
             const buffer = await blob.arrayBuffer();
             const view = new DataView(buffer);
@@ -199,7 +214,7 @@
             return new Blob(newParts, { type: 'image/png' });
         }
 
-        // --- STEP 1: Deep Analysis ---
+        // --- STEP 1: Analysis ---
         function analyzeMetadata(file) {
             return new Promise((resolve) => {
                 if (file.type !== "image/jpeg" && file.type !== "image/jpg") { resolve([]); return; }
@@ -223,7 +238,7 @@
             });
         }
 
-        // --- STEP 2: Render & Sanitize ---
+        // --- STEP 2: Process ---
         async function processImage(file) {
             const removedMetadata = await analyzeMetadata(file);
 
@@ -240,32 +255,27 @@
                     ctx.drawImage(img, 0, 0);
                     
                     const outMime = file.type === 'image/webp' ? 'image/webp' : (file.type === 'image/png' ? 'image/png' : 'image/jpeg');
-                    
+                    const extension = outMime.split('/')[1];
+
                     canvas.toBlob(async (blob) => {
                         if (!blob) { reject(new Error('Canvas Error')); return; }
 
                         let cleanBlob = blob;
-                        let extraAction = "Re-Encoding";
-                        
                         try {
-                            if (outMime === 'image/jpeg') {
-                                cleanBlob = await sanitizeJPEG(blob);
-                                extraAction += " + Header Stripping";
-                            } else if (outMime === 'image/png') {
-                                cleanBlob = await sanitizePNG(blob);
-                                extraAction += " + Chunk Filtering";
-                            }
+                            if (outMime === 'image/jpeg') cleanBlob = await sanitizeJPEG(blob);
+                            else if (outMime === 'image/png') cleanBlob = await sanitizePNG(blob);
                         } catch (e) {
                             console.error("Sanitization failed", e);
                         }
                         
+                        const newFilename = generateScrambledFilename(file.name, extension);
+
                         resolve({
                             original: file,
                             blob: cleanBlob,
-                            name: generateRandomFilename(outMime.split('/')[1]),
+                            name: newFilename,
                             status: 'success',
-                            removedData: removedMetadata,
-                            action: extraAction
+                            removedData: removedMetadata
                         });
 
                     }, outMime, 0.95);
@@ -303,18 +313,57 @@
             const li = document.createElement('li');
             li.id = `file-${id}`;
             li.className = 'p-4 border-b border-slate-50 last:border-0 bg-white hover:bg-slate-50 transition-colors';
+            
             li.innerHTML = `
-                <div class="flex flex-col sm:flex-row sm:items-start gap-4">
-                    <div class="flex-grow min-w-0">
-                        <div class="flex justify-between items-start mb-1">
-                            <h4 class="text-sm font-medium text-slate-900 truncate max-w-[200px]" title="${file.name}">${file.name}</h4>
-                            <span class="status-badge text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-500 flex items-center gap-1"><i class="ph ph-spinner animate-spin"></i></span>
+                <div class="flex flex-col sm:flex-row gap-4 items-stretch">
+                    <!-- Left Column: Input Info + Analysis Report -->
+                    <div class="flex-grow min-w-0 py-1">
+                        <div class="flex items-center gap-3 mb-2">
+                            <div class="w-10 h-10 rounded bg-slate-100 flex items-center justify-center text-slate-400 flex-shrink-0">
+                                <i class="ph-fill ph-image text-xl"></i>
+                            </div>
+                            <div class="min-w-0">
+                                <h4 class="text-sm font-bold text-slate-900 truncate" title="${file.name}">${file.name}</h4>
+                                <p class="text-xs text-slate-400">${formatBytes(file.size)}</p>
+                            </div>
                         </div>
-                        <p class="text-xs text-slate-400 mb-2">${formatBytes(file.size)}</p>
-                        <div class="report-area hidden bg-slate-50 rounded border border-slate-100 p-2 text-xs"></div>
+                        
+                        <!-- Report Container (Initially Hidden) -->
+                        <div class="report-area hidden bg-slate-50 rounded border border-slate-100 p-3 text-xs mt-2"></div>
                     </div>
-                    <div class="action-area hidden flex-shrink-0">
-                         <button onclick="downloadSingle('${id}')" class="text-slate-500 hover:text-slate-800 p-2 rounded hover:bg-slate-100 transition-colors" title="Download"><i class="ph-fill ph-download-simple text-lg"></i></button>
+
+                    <!-- Right Column: Output Status & Action -->
+                    <div class="sm:w-80 flex-shrink-0 sm:border-l sm:border-slate-100 sm:pl-6 flex flex-col justify-center gap-3">
+                        
+                        <!-- Loading State -->
+                        <div class="loading-state flex items-center gap-2 text-slate-500 text-sm h-full justify-center sm:justify-start">
+                             <i class="ph ph-spinner animate-spin text-brand-500"></i> Verarbeite...
+                        </div>
+
+                        <!-- Result Action Area (Hidden initially) -->
+                        <div class="action-area hidden flex-col w-full gap-2">
+                             <!-- Status Badge -->
+                             <div class="flex justify-between items-center w-full">
+                                <span class="text-[10px] uppercase tracking-wider text-slate-400 font-semibold">Status</span>
+                                <span class="status-badge text-xs px-2 py-0.5 rounded bg-green-100 text-green-700 font-medium flex items-center gap-1">
+                                    <i class="ph-bold ph-check"></i> Bereinigt
+                                </span>
+                             </div>
+
+                             <!-- Filename + Button Row (Side-by-Side) -->
+                             <div class="flex items-stretch gap-2 mt-1">
+                                 <!-- New Filename Box (Takes remaining space) -->
+                                 <div class="flex-grow min-w-0 bg-slate-50 border border-slate-100 rounded px-2 py-1.5 flex flex-col justify-center">
+                                    <span class="text-[10px] text-slate-400 leading-none mb-1">Neuer Name:</span>
+                                    <span class="new-filename text-xs font-mono text-slate-600 truncate select-all block leading-none"></span>
+                                 </div>
+                                 
+                                 <!-- Download Button (Right of field) -->
+                                 <button onclick="downloadSingle('${id}')" class="flex-shrink-0 bg-slate-800 hover:bg-slate-700 text-white px-3 rounded shadow-sm text-xs font-medium transition-colors flex items-center justify-center min-w-[80px]" title="Speichern">
+                                    Speichern
+                                </button>
+                             </div>
+                        </div>
                     </div>
                 </div>`;
             fileList.appendChild(li);
@@ -323,32 +372,59 @@
         function updateFileUI(id, result, error = null) {
             const el = document.getElementById(`file-${id}`);
             if (!el) return;
-            const badge = el.querySelector('.status-badge');
-            const reportArea = el.querySelector('.report-area');
+            const loadingState = el.querySelector('.loading-state');
             const actionArea = el.querySelector('.action-area');
+            const reportArea = el.querySelector('.report-area');
+            const newFilenameEl = el.querySelector('.new-filename');
 
+            loadingState.classList.add('hidden');
+            
             if (error) {
-                badge.className = "text-xs px-2 py-0.5 rounded bg-red-50 text-red-600"; badge.textContent = "Fehler";
-            } else {
-                const sizeDiff = result.original.size - result.blob.size;
-                badge.className = "text-xs px-2 py-0.5 rounded bg-green-50 text-green-700 font-medium";
-                badge.innerHTML = `Bereinigt`;
-
-                let html = '';
-                if (result.removedData && result.removedData.length > 0) {
-                    reportArea.classList.remove('hidden');
-                    html += `<div class="mb-1 font-semibold text-slate-600">Entfernte Daten:</div><div class="grid grid-cols-1 gap-1">`;
-                    result.removedData.forEach(item => {
-                        html += `<div class="flex items-center gap-2 text-slate-500 truncate"><i class="ph-fill ${item.icon} text-slate-400"></i><span class="truncate line-through opacity-70">${item.value}</span></div>`;
-                    });
-                    html += `</div>`;
-                    reportArea.innerHTML = html;
-                }
-
-                actionArea.classList.remove('hidden');
-                el.dataset.downloadUrl = URL.createObjectURL(result.blob);
-                el.dataset.filename = result.name;
+                reportArea.classList.remove('hidden');
+                reportArea.innerHTML = `<span class="text-red-500 font-medium"><i class="ph-bold ph-warning"></i> Fehler bei der Verarbeitung.</span>`;
+                return;
             }
+
+            // Update Report (Left Column)
+            reportArea.classList.remove('hidden');
+            let html = '';
+            if (result.removedData && result.removedData.length > 0) {
+                html += `
+                    <div class="mb-2">
+                        <div class="font-semibold text-slate-700 text-xs mb-1.5 border-b border-slate-200 pb-1">Gefundene & entfernte Daten:</div>
+                        <div class="flex flex-col gap-1">`;
+                result.removedData.forEach(item => {
+                    html += `
+                        <div class="flex items-start gap-2 text-slate-600">
+                            <i class="ph-fill ${item.icon} text-slate-400 mt-0.5 flex-shrink-0"></i>
+                            <div class="flex-grow min-w-0">
+                                <span class="font-medium text-slate-500 text-[11px] uppercase mr-1">${item.key}:</span>
+                                <span class="line-through decoration-red-300 opacity-70 break-words whitespace-normal">${item.value}</span>
+                            </div>
+                        </div>`;
+                });
+                html += `</div></div>`;
+            } else {
+                html += `
+                    <div class="mb-2 text-slate-500 italic flex items-center gap-1.5">
+                        <i class="ph ph-magnifying-glass text-slate-400"></i>
+                        Keine lesbaren Standard-Metadaten gefunden.
+                    </div>`;
+            }
+            html += `
+                <div class="pt-2 border-t border-slate-200 text-[10px] font-mono text-slate-500 flex items-center gap-1.5 mt-auto">
+                    <i class="ph-bold ph-check text-green-600"></i>
+                    <span>Header rekonstruiert & bereinigt.</span>
+                </div>`;
+            reportArea.innerHTML = html;
+
+            // Update Action Area (Right Column)
+            actionArea.classList.remove('hidden');
+            actionArea.classList.add('flex');
+            newFilenameEl.textContent = result.name;
+            
+            el.dataset.downloadUrl = URL.createObjectURL(result.blob);
+            el.dataset.filename = result.name;
         }
 
         window.downloadSingle = function(id) { const el = document.getElementById(`file-${id}`); if(el && el.dataset.downloadUrl) saveAs(el.dataset.downloadUrl, el.dataset.filename); };
@@ -369,5 +445,6 @@
     </script>
 </body>
 </html>
+
 
 
