@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Metadaten Cleaner</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- JSZip für Download -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- FileSaver für Download -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- Phosphor Icons -->
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+    <!-- Exif-JS -->
+    <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: {
+                            50: '#f8fafc', // Neutraler (Slate-like)
+                            100: '#f1f5f9',
+                            500: '#64748b', // Slate 500 statt Blau
+                            600: '#475569', // Slate 600
+                            900: '#0f172a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans min-h-screen flex flex-col justify-center">
+
+    <!-- Kein Header -->
+
+    <!-- Main Content -->
+    <main class="flex-grow w-full max-w-3xl mx-auto px-4 py-8 flex flex-col justify-center">
+        
+        <div class="text-center mb-8">
+            <h2 class="text-2xl font-bold text-slate-900 mb-2">Metadaten bereinigen</h2>
+            <p class="text-slate-600 text-sm">
+                Entfernt Metadaten und reduziert den Datei-Header auf das technische Minimum.
+            </p>
+        </div>
+
+        <!-- Drop Zone -->
+        <div id="drop-zone" class="border-2 border-dashed border-slate-300 rounded-lg p-12 text-center bg-white transition-all hover:border-slate-500 hover:bg-slate-50 cursor-pointer group relative overflow-hidden shadow-sm">
+            <input type="file" id="file-input" class="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" multiple accept="image/jpeg, image/png, image/webp">
+            
+            <div class="pointer-events-none transition-transform group-hover:scale-105 duration-300">
+                <div class="bg-slate-100 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-3 text-slate-600">
+                    <i class="ph ph-upload-simple text-2xl"></i>
+                </div>
+                <h3 class="text-lg font-medium text-slate-900">Dateien auswählen</h3>
+                <p class="text-slate-400 text-xs mt-1">JPG, PNG, WEBP</p>
+            </div>
+        </div>
+
+        <!-- File List Area -->
+        <div id="file-list-container" class="mt-8 hidden">
+            <div class="flex justify-between items-end mb-4">
+                <h3 class="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                    Verarbeitete Dateien
+                </h3>
+                <button id="download-all-btn" class="bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded text-sm font-medium transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                    <i class="ph ph-download-simple"></i>
+                    Alle speichern (ZIP)
+                </button>
+            </div>
+
+            <div class="bg-white rounded-lg shadow-sm border border-slate-200 overflow-hidden">
+                <ul id="file-list" class="divide-y divide-slate-100">
+                    <!-- Files injected here -->
+                </ul>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- Minimal Footer -->
+    <footer class="py-6 text-center text-slate-400 text-xs">
+        <p>Lokale Verarbeitung im Browser.</p>
+    </footer>
+
+    <!-- Logic -->
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const fileListContainer = document.getElementById('file-list-container');
+        const fileList = document.getElementById('file-list');
+        const downloadAllBtn = document.getElementById('download-all-btn');
+
+        let processedFiles = []; 
+        let isProcessing = false;
+
+        function formatBytes(bytes, decimals = 2) {
+            if (!+bytes) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        }
+
+        function generateRandomFilename(extension) {
+            const timestamp = new Date().getTime();
+            const random = Math.random().toString(36).substring(2, 8);
+            return `clean_${timestamp}_${random}.${extension}`;
+        }
+
+        function convertDMSToDD(degrees, minutes, seconds, direction) {
+            let dd = degrees + minutes/60 + seconds/(60*60);
+            if (direction == "S" || direction == "W") dd = dd * -1;
+            return dd.toFixed(6);
+        }
+
+        // --- BINARY SANITIZERS (Header Neutralization) ---
+        async function sanitizeJPEG(blob) {
+            const buffer = await blob.arrayBuffer();
+            const view = new DataView(buffer);
+            let offset = 0;
+            const newParts = [];
+
+            if (view.getUint16(0) !== 0xFFD8) return blob; 
+            newParts.push(buffer.slice(0, 2)); 
+            offset += 2;
+
+            while (offset < view.byteLength) {
+                if (view.getUint8(offset) !== 0xFF) { offset++; continue; }
+                const marker = view.getUint8(offset + 1);
+                
+                if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { 
+                    newParts.push(buffer.slice(offset, offset + 2));
+                    offset += 2;
+                    continue;
+                }
+                
+                if (marker === 0xD9) { 
+                    newParts.push(buffer.slice(offset, offset + 2));
+                    break; 
+                }
+
+                if (offset + 4 > view.byteLength) break;
+                const len = view.getUint16(offset + 2);
+                
+                const isAppMarker = (marker >= 0xE1 && marker <= 0xEF); 
+                const isComment = (marker === 0xFE);
+
+                if (isAppMarker || isComment) {
+                    // Strip
+                } else if (marker === 0xDA) {
+                    newParts.push(buffer.slice(offset)); 
+                    break;
+                } else {
+                    newParts.push(buffer.slice(offset, offset + 2 + len));
+                }
+                offset += 2 + len;
+            }
+            return new Blob(newParts, { type: 'image/jpeg' });
+        }
+
+        async function sanitizePNG(blob) {
+            const buffer = await blob.arrayBuffer();
+            const view = new DataView(buffer);
+            const signature = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+            
+            for (let i = 0; i < 8; i++) {
+                if (view.getUint8(i) !== signature[i]) return blob; 
+            }
+
+            const newParts = [];
+            newParts.push(buffer.slice(0, 8)); 
+            let offset = 8;
+
+            while (offset < view.byteLength) {
+                if (offset + 8 > view.byteLength) break;
+                
+                const len = view.getUint32(offset);
+                const typeCode = view.getUint32(offset + 4);
+                const type = String.fromCharCode(
+                    (typeCode >> 24) & 0xFF,
+                    (typeCode >> 16) & 0xFF,
+                    (typeCode >> 8) & 0xFF,
+                    typeCode & 0xFF
+                );
+
+                const keep = ['IHDR', 'PLTE', 'IDAT', 'IEND', 'tRNS'].includes(type);
+
+                if (keep) {
+                    newParts.push(buffer.slice(offset, offset + 12 + len));
+                }
+                offset += 12 + len;
+                if (type === 'IEND') break;
+            }
+            return new Blob(newParts, { type: 'image/png' });
+        }
+
+        // --- STEP 1: Deep Analysis ---
+        function analyzeMetadata(file) {
+            return new Promise((resolve) => {
+                if (file.type !== "image/jpeg" && file.type !== "image/jpg") { resolve([]); return; }
+                EXIF.getData(file, function() {
+                    const foundTags = [];
+                    const allTags = EXIF.getAllTags(this);
+                    
+                    if (allTags.GPSLatitude && allTags.GPSLongitude) {
+                        try {
+                            const lat = convertDMSToDD(allTags.GPSLatitude[0], allTags.GPSLatitude[1], allTags.GPSLatitude[2], allTags.GPSLatitudeRef || "N");
+                            const lon = convertDMSToDD(allTags.GPSLongitude[0], allTags.GPSLongitude[1], allTags.GPSLongitude[2], allTags.GPSLongitudeRef || "E");
+                            foundTags.push({ category: 'GPS', key: 'Standort', value: `${lat}, ${lon}`, icon: 'ph-map-pin', color: 'text-red-600' });
+                        } catch(e) {}
+                    }
+                    if (allTags.Make || allTags.Model) foundTags.push({ category: 'Device', key: 'Kamera', value: `${allTags.Make || ''} ${allTags.Model || ''}`.trim(), icon: 'ph-camera', color: 'text-amber-600' });
+                    if (allTags.DateTimeOriginal) foundTags.push({ category: 'Time', key: 'Datum', value: allTags.DateTimeOriginal, icon: 'ph-calendar', color: 'text-amber-600' });
+                    if (allTags.Software || allTags.Artist) foundTags.push({ category: 'Auth', key: 'Software/Autor', value: 'Gefunden', icon: 'ph-user', color: 'text-purple-600' });
+                    
+                    resolve(foundTags);
+                });
+            });
+        }
+
+        // --- STEP 2: Render & Sanitize ---
+        async function processImage(file) {
+            const removedMetadata = await analyzeMetadata(file);
+
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                const url = URL.createObjectURL(file);
+                
+                img.onload = () => {
+                    URL.revokeObjectURL(url);
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.width;
+                    canvas.height = img.height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    
+                    const outMime = file.type === 'image/webp' ? 'image/webp' : (file.type === 'image/png' ? 'image/png' : 'image/jpeg');
+                    
+                    canvas.toBlob(async (blob) => {
+                        if (!blob) { reject(new Error('Canvas Error')); return; }
+
+                        let cleanBlob = blob;
+                        let extraAction = "Re-Encoding";
+                        
+                        try {
+                            if (outMime === 'image/jpeg') {
+                                cleanBlob = await sanitizeJPEG(blob);
+                                extraAction += " + Header Stripping";
+                            } else if (outMime === 'image/png') {
+                                cleanBlob = await sanitizePNG(blob);
+                                extraAction += " + Chunk Filtering";
+                            }
+                        } catch (e) {
+                            console.error("Sanitization failed", e);
+                        }
+                        
+                        resolve({
+                            original: file,
+                            blob: cleanBlob,
+                            name: generateRandomFilename(outMime.split('/')[1]),
+                            status: 'success',
+                            removedData: removedMetadata,
+                            action: extraAction
+                        });
+
+                    }, outMime, 0.95);
+                };
+                img.onerror = () => reject(new Error('Bildfehler'));
+                img.src = url;
+            });
+        }
+
+        async function handleFiles(files) {
+            if (files.length === 0) return;
+            fileListContainer.classList.remove('hidden');
+            isProcessing = true;
+            updateUIState();
+            const validFiles = Array.from(files).filter(f => f.type.startsWith('image/'));
+            
+            const queue = validFiles.map(async (file) => {
+                const uiId = Math.random().toString(36).substring(7);
+                addFileToUI(file, uiId);
+                try {
+                    const result = await processImage(file);
+                    updateFileUI(uiId, result);
+                    processedFiles.push(result);
+                } catch (error) {
+                    updateFileUI(uiId, { status: 'error', msg: 'Fehler' }, error);
+                }
+            });
+            await Promise.all(queue);
+            isProcessing = false;
+            updateUIState();
+        }
+
+        // --- UI ---
+        function addFileToUI(file, id) {
+            const li = document.createElement('li');
+            li.id = `file-${id}`;
+            li.className = 'p-4 border-b border-slate-50 last:border-0 bg-white hover:bg-slate-50 transition-colors';
+            li.innerHTML = `
+                <div class="flex flex-col sm:flex-row sm:items-start gap-4">
+                    <div class="flex-grow min-w-0">
+                        <div class="flex justify-between items-start mb-1">
+                            <h4 class="text-sm font-medium text-slate-900 truncate max-w-[200px]" title="${file.name}">${file.name}</h4>
+                            <span class="status-badge text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-500 flex items-center gap-1"><i class="ph ph-spinner animate-spin"></i></span>
+                        </div>
+                        <p class="text-xs text-slate-400 mb-2">${formatBytes(file.size)}</p>
+                        <div class="report-area hidden bg-slate-50 rounded border border-slate-100 p-2 text-xs"></div>
+                    </div>
+                    <div class="action-area hidden flex-shrink-0">
+                         <button onclick="downloadSingle('${id}')" class="text-slate-500 hover:text-slate-800 p-2 rounded hover:bg-slate-100 transition-colors" title="Download"><i class="ph-fill ph-download-simple text-lg"></i></button>
+                    </div>
+                </div>`;
+            fileList.appendChild(li);
+        }
+
+        function updateFileUI(id, result, error = null) {
+            const el = document.getElementById(`file-${id}`);
+            if (!el) return;
+            const badge = el.querySelector('.status-badge');
+            const reportArea = el.querySelector('.report-area');
+            const actionArea = el.querySelector('.action-area');
+
+            if (error) {
+                badge.className = "text-xs px-2 py-0.5 rounded bg-red-50 text-red-600"; badge.textContent = "Fehler";
+            } else {
+                const sizeDiff = result.original.size - result.blob.size;
+                badge.className = "text-xs px-2 py-0.5 rounded bg-green-50 text-green-700 font-medium";
+                badge.innerHTML = `Bereinigt`;
+
+                let html = '';
+                if (result.removedData && result.removedData.length > 0) {
+                    reportArea.classList.remove('hidden');
+                    html += `<div class="mb-1 font-semibold text-slate-600">Entfernte Daten:</div><div class="grid grid-cols-1 gap-1">`;
+                    result.removedData.forEach(item => {
+                        html += `<div class="flex items-center gap-2 text-slate-500 truncate"><i class="ph-fill ${item.icon} text-slate-400"></i><span class="truncate line-through opacity-70">${item.value}</span></div>`;
+                    });
+                    html += `</div>`;
+                    reportArea.innerHTML = html;
+                }
+
+                actionArea.classList.remove('hidden');
+                el.dataset.downloadUrl = URL.createObjectURL(result.blob);
+                el.dataset.filename = result.name;
+            }
+        }
+
+        window.downloadSingle = function(id) { const el = document.getElementById(`file-${id}`); if(el && el.dataset.downloadUrl) saveAs(el.dataset.downloadUrl, el.dataset.filename); };
+        function updateUIState() { downloadAllBtn.disabled = isProcessing || processedFiles.length === 0; downloadAllBtn.innerHTML = isProcessing ? `<i class="ph ph-spinner animate-spin"></i>` : `<i class="ph ph-download-simple"></i> Alle (ZIP)`; }
+
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('border-slate-500', 'bg-slate-50'); });
+        dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('border-slate-500', 'bg-slate-50'); });
+        dropZone.addEventListener('drop', (e) => { e.preventDefault(); dropZone.classList.remove('border-slate-500', 'bg-slate-50'); handleFiles(e.dataTransfer.files); });
+        fileInput.addEventListener('change', (e) => { handleFiles(e.target.files); fileInput.value = ''; });
+        downloadAllBtn.addEventListener('click', async () => {
+            if (processedFiles.length === 0) return;
+            const zip = new JSZip();
+            const folder = zip.folder("cleaned_images");
+            processedFiles.forEach(f => folder.file(f.name, f.blob));
+            const content = await zip.generateAsync({type:"blob"});
+            saveAs(content, "clean_images.zip");
+        });
+    </script>
+</body>
+</html>
+
+
